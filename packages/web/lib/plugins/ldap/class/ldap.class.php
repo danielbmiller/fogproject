@@ -545,6 +545,7 @@ class LDAP extends FOGController
          * are admins.
          */
         if ($useGroupMatch) {
+            $bind = @$this->bind($bindDN, $bindPass);
             $accessLevel = $this->_getAccessLevel($grpMemAttr, $userDN);
         } else {
             $accessLevel = 2;
@@ -613,8 +614,8 @@ class LDAP extends FOGController
         $adminGroups = explode(',', $adminGroup);
         $adminGroups = array_map('trim', $adminGroups);
         $filter = sprintf(
-            '(&(|(name=%s))(%s=%s))',
-            implode(')(name=', (array)$adminGroups),
+            '(&(|(cn=%s))(%s=%s))',
+            implode(')(cn=', (array)$adminGroups),
             $grpMemAttr,
             $this->escape($userDN, null, LDAP_ESCAPE_FILTER)
         );
@@ -637,8 +638,8 @@ class LDAP extends FOGController
         $userGroups = explode(',', $userGroup);
         $userGroups = array_map('trim', $userGroups);
         $filter = sprintf(
-            '(&(|(name=%s))(%s=%s))',
-            implode(')(name=', (array)$userGroups),
+            '(&(|(cn=%s))(%s=%s))',
+            implode(')(cn=', (array)$userGroups),
             $grpMemAttr,
             $this->escape($userDN, null, LDAP_ESCAPE_FILTER)
         );
