@@ -514,13 +514,19 @@ class LDAP extends FOGController
                 return false;
             }
         }
+		/**
+		 * rebind as search user
+		 */
+		$bind = @$this->bind($bindDN, $bindPass);
         $attr = array('dn');
         $filter = sprintf(
             '(&(|(objectcategory=person)(objectclass=person))(%s=%s))',
             $usrNamAttr,
             $user
         );
+		
         $result = $this->_result($searchDN, $filter, $attr);
+		
         if (false === $result) {
             error_log(
                 sprintf(
@@ -619,8 +625,8 @@ class LDAP extends FOGController
         $adminGroups = explode(',', $adminGroup);
         $adminGroups = array_map('trim', $adminGroups);
         $filter = sprintf(
-            '(&(|(name=%s))(%s=%s))',
-            implode(')(name=', (array)$adminGroups),
+            '(&(|(cn=%s))(%s=%s))',
+            implode(')(cn=', (array)$adminGroups),
             $grpMemAttr,
             $this->escape($userDN, null, LDAP_ESCAPE_FILTER)
         );
@@ -643,8 +649,8 @@ class LDAP extends FOGController
         $userGroups = explode(',', $userGroup);
         $userGroups = array_map('trim', $userGroups);
         $filter = sprintf(
-            '(&(|(name=%s))(%s=%s))',
-            implode(')(name=', (array)$userGroups),
+            '(&(|(cn=%s))(%s=%s))',
+            implode(')(cn=', (array)$userGroups),
             $grpMemAttr,
             $this->escape($userDN, null, LDAP_ESCAPE_FILTER)
         );
