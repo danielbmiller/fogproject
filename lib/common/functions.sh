@@ -452,9 +452,6 @@ configureUDPCast() {
 }
 configureFTP() {
     dots "Setting up and starting VSFTP Server..."
-    if [[ -f $ftpconfig ]]; then
-        mv $ftpconfig ${ftpconfig}.fogbackup
-    fi
     if [[ -f $ftpxinetd ]]; then
         mv $ftpxinetd ${ftpxinetd}.fogbackup
     fi
@@ -466,7 +463,9 @@ configureFTP() {
     if [[ $vsvermaj -gt 3 ]] || [[ $vsvermaj -eq 3 && $vsverbug -ge 2 ]]; then
         seccompsand="seccomp_sandbox=NO"
     fi
+    mv -fv "${ftpconfig}" "${ftpconfig}.${timestamp}" >>$workingdir/error_logs/fog_error_${version}.log 2>&1
     echo -e  "max_per_ip=200\nanonymous_enable=NO\nlocal_enable=YES\nwrite_enable=YES\nlocal_umask=022\ndirmessage_enable=YES\nxferlog_enable=YES\nconnect_from_port_20=YES\nxferlog_std_format=YES\nlisten=YES\npam_service_name=vsftpd\nuserlist_enable=NO\n$seccompsand" > "$ftpconfig"
+    diffconfig "${ftpconfig}"
     case $systemctl in
         yes)
             systemctl enable vsftpd >>$workingdir/error_logs/fog_error_${version}.log 2>&1
@@ -510,7 +509,7 @@ configureTFTPandPXE() {
     [[ -e ${tftpdirdst}.fogbackup ]] && rm -rf ${tftpdirdst}.fogbackup >>$workingdir/error_logs/fog_error_${version}.log 2>&1
     [[ -d $tftpdirdst && ! -d ${tftpdirdst}.prev ]] && mkdir -p ${tftpdirdst}.prev >>$workingdir/error_logs/fog_error_${version}.log 2>&1
     [[ -d ${tftpdirdst}.prev ]] && cp -Rf $tftpdirdst/* ${tftpdirdst}.prev/ >>$workingdir/error_logs/fog_error_${version}.log 2>&1
-    if [[ "x$httpproto" = "xhttps" && ( ${sslpath}CA/.fogCA.pem -nt /tftpboot/undionly.kkpxe ) ]]; then
+    if [[ "x$httpproto" = "xhttps" ]]; then
         dots "Compiling iPXE binaries trusting your SSL certificate"
         cd $buildipxesrc
         ./buildipxe.sh ${sslpath}CA/.fogCA.pem >>$workingdir/error_logs/fog_ipxe-build_${version}.log 2>&1
@@ -824,7 +823,7 @@ checkSELinux() {
     [[ "$currentmode" != "enforcing" && "$configmode" != "enforcing" ]] && return
     echo " * SELinux is currently enabled on your system. This is often causing"
     echo " * issues and we recommend to disable it on FOG servers as of now."
-    echo " * Should the installer disable SELinux for you now? (Y/n)"
+    echo -n " * Should the installer disable SELinux for you now? (Y/n) "
     sedisable=""
     while [[ -z $sedisable ]]; do
         if [[ -n $autoaccept ]]; then
@@ -866,7 +865,7 @@ checkFirewall() {
     [[ $fwrunning -ne 1 ]] && return
     echo " * The local firewall seems to be currently enabled on your system. This can cause"
     echo " * issues on FOG servers if you are not well experienced and know what you are doing."
-    echo " * Should the installer try to disable the local firewall for you now? (y/N)"
+    echo -n " * Should the installer try to disable the local firewall for you now? (y/N) "
     fwdisable=""
     while [[ -z $fwdisable ]]; do
         if [[ -n $autoaccept ]]; then
@@ -992,7 +991,20 @@ errorStat() {
     local skipOk=$2
     if [[ $status != 0 ]]; then
         echo "Failed!"
-        [[ -z $exitFail ]] && exit $status
+        if [[ -z $exitFail ]]; then
+            echo
+            echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            echo "!! The installer was not able to run all the way to the end as   !!"
+            echo "!! something has caused it to fail. The following few lines are  !!"
+            echo "!! from the error log file which might help us figure out what's !!"
+            echo "!! wrong. Please add this information when reporting an error.   !!"
+            echo "!! As well you might want to take a look at the full error log   !!"
+            echo "!! in $workingdir/error_logs/fog_error_${version}.log !!"
+            echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            echo
+            tail -n 5 $workingdir/error_logs/fog_error_${version}.log
+            exit $status
+        fi
     fi
     [[ -z $skipOk ]] && echo "OK"
 }
@@ -1272,7 +1284,9 @@ configureNFS() {
     if [[ $blexports != 1 ]]; then
         echo "Skipped"
     else
+        mv -fv "${nfsconfig}" "${nfsconfig}.${timestamp}" >>$workingdir/error_logs/fog_error_${version}.log 2>&1
         echo -e "$storageLocation *(ro,sync,no_wdelay,no_subtree_check,insecure_locks,no_root_squash,insecure,fsid=0)\n$storageLocation/dev *(rw,async,no_wdelay,no_subtree_check,no_root_squash,insecure,fsid=1)" > "$nfsconfig"
+        diffconfig "${nfsconfig}"
         errorStat $?
         dots "Setting up and starting RPCBind"
         if [[ $systemctl == yes ]]; then
@@ -1820,6 +1834,15 @@ EOF
     [[ -z $sslprivkey ]] && sslprivkey="$sslpath/.srvprivate.key"
     if [[ $recreateKeys == yes || $recreateCA == yes || $caCreated != yes || ! -e $sslpath || ! -e $sslprivkey ]]; then
         dots "Creating SSL Private Key"
+        if [[ $(validip $ipaddress) -ne 0 ]]; then
+            echo -e "\n"
+            echo "  You seem to be using a DNS name instead of an IP address."
+            echo "  This would cause an error when generating SSL key and certs"
+            echo "  and so we will stop here! Please adjust variable 'ipaddress'"
+            echo "  in .fogsettings file if this is an update and make sure you"
+            echo "  provide an IP address when re-running the installer."
+            exit 1
+        fi
         mkdir -p $sslpath >>$workingdir/error_logs/fog_error_${version}.log 2>&1
         openssl genrsa -out $sslprivkey 4096 >>$workingdir/error_logs/fog_error_${version}.log 2>&1
         cat > $sslpath/req.cnf << EOF
@@ -1866,20 +1889,23 @@ EOF
             echo "Skipped"
             ;;
         *)
-            if [[ $recreateCA != yes && $recreateKeys != yes && -f $etcconf ]]; then
-                echo "Skipped"
-            else
+                if [[ $osid -eq 2 ]]; then
+                    a2dissite 001-fog >>$workingdir/error_logs/fog_error_${version}.log 2>&1
+                    a2ensite 000-default >>$workingdir/error_logs/fog_error_${version}.log 2>&1
+                fi
+                mv -fv "${etcconf}" "${etcconf}.${timestamp}" >>$workingdir/error_logs/fog_error_${version}.log 2>&1
+                echo "<VirtualHost *:80>" > "$etcconf"
+                echo "    <FilesMatch \"\.php\$\">" >> "$etcconf"
+                if [[ $osid -eq 1 && $OSVersion -lt 7 ]]; then
+                    echo "        SetHandler application/x-httpd-php" >> "$etcconf"
+                else
+                    echo "        SetHandler \"proxy:fcgi://127.0.0.1:9000/\"" >> "$etcconf"
+                fi
+                echo "    </FilesMatch>" >> "$etcconf"
+                echo "    ServerName $ipaddress" >> "$etcconf"
+                echo "    ServerAlias $hostname" >> "$etcconf"
+                echo "    DocumentRoot $docroot" >> "$etcconf"
                 if [[ $httpproto == https ]]; then
-                    echo "<VirtualHost *:80>" > "$etcconf"
-                    echo "    <FilesMatch \"\.php\$\">" >> "$etcconf"
-                    if [[ $osid -eq 1 && $OSVersion -lt 7 ]]; then
-                        echo "        SetHandler application/x-httpd-php" >> "$etcconf"
-                    else
-                        echo "        SetHandler \"proxy:fcgi://127.0.0.1:9000/\"" >> "$etcconf"
-                    fi
-                    echo "    </FilesMatch>" >> "$etcconf"
-                    echo "    ServerName $ipaddress" >> "$etcconf"
-                    echo "    ServerAlias $hostname" >> "$etcconf"
                     echo "    RewriteEngine On" >> "$etcconf"
                     echo "    RewriteCond %{REQUEST_METHOD} ^(TRACE|TRACK)" >> "$etcconf"
                     echo "    RewriteRule .* - [F]" >> "$etcconf"
@@ -1917,18 +1943,7 @@ EOF
                     echo "    RewriteRule ^/fog/(.*)$ /fog/api/index.php [QSA,L]" >> "$etcconf"
                     echo "</VirtualHost>" >> "$etcconf"
                 else
-                    echo "<VirtualHost *:80>" > "$etcconf"
-                    echo "    <FilesMatch \"\.php\$\">" >> "$etcconf"
-                    if [[ $osid -eq 1 && $OSVersion -lt 7 ]]; then
-                        echo "        SetHandler application/x-httpd-php" >> "$etcconf"
-                    else
-                        echo "        SetHandler \"proxy:fcgi://127.0.0.1:9000/\"" >> "$etcconf"
-                    fi
-                    echo "    </FilesMatch>" >> "$etcconf"
                     echo "    KeepAlive Off" >> "$etcconf"
-                    echo "    ServerName $ipaddress" >> "$etcconf"
-                    echo "    ServerAlias $hostname" >> "$etcconf"
-                    echo "    DocumentRoot $docroot" >> "$etcconf"
                     echo "    <Directory $webdirdest>" >> "$etcconf"
                     echo "        DirectoryIndex index.php index.html index.htm" >> "$etcconf"
                     echo "    </Directory>" >> "$etcconf"
@@ -1940,6 +1955,7 @@ EOF
                     echo "    RewriteRule ^/fog/(.*)$ /fog/api/index.php [QSA,L]" >> "$etcconf"
                     echo "</VirtualHost>" >> "$etcconf"
                 fi
+                diffconfig "${etcconf}"
                 errorStat $?
                 ln -s $webdirdest $webdirdest/ >>$workingdir/error_logs/fog_error_${version}.log 2>&1
                 case $osid in
@@ -1974,7 +1990,6 @@ EOF
                     a2ensite "001-fog" >>$workingdir/error_logs/fog_error_${version}.log 2>&1
                     a2dissite "000-default" >>$workingdir/error_logs/fog_error_${version}.log 2>&1
                 fi
-            fi
             ;;
     esac
     dots "Starting and checking status of web services"
@@ -2058,21 +2073,6 @@ configureHttpd() {
             esac
             ;;
     esac
-    if [[ -f $etcconf ]]; then
-        case $novhost in
-            [Yy]|[Yy][Ee][Ss])
-                ;;
-            *)
-                dots "Removing vhost file"
-                if [[ $osid -eq 2 ]]; then
-                    a2dissite 001-fog >>$workingdir/error_logs/fog_error_${version}.log 2>&1
-                    a2ensite 000-default >>$workingdir/error_logs/fog_error_${version}.log 2>&1
-                fi
-                rm $etcconf >>$workingdir/error_logs/fog_error_${version}.log 2>&1
-                errorStat $?
-                ;;
-        esac
-    fi
     dots "Setting up Apache and PHP files"
     if [[ ! -f $phpini ]]; then
         echo "Failed"
@@ -2303,6 +2303,16 @@ class Config
     }
 }" > "${webdirdest}/lib/fog/config.class.php"
     errorStat $?
+    dots "Creating redirection index file"
+    if [[ ! -f ${docroot}/index.php ]]; then
+        echo "<?php
+header('Location: /fog/index.php');
+die();
+?>" > ${docroot}/index.php && chown ${apacheuser}:${apacheuser} ${docroot}/index.php
+        errorStat $?
+    else
+        echo "Skipped"
+    fi
     downloadfiles
     if [[ $osid -eq 2 ]]; then
         php -m | grep mysqlnd >>$workingdir/error_logs/fog_error_${version}.log 2>&1
@@ -2346,18 +2356,20 @@ class Config
 }
 downloadfiles() {
     dots "Downloading kernel, init and fog-client binaries"
+    clientVer="$(awk -F\' /"define\('FOG_CLIENT_VERSION'[,](.*)"/'{print $4}' ../packages/web/lib/fog/system.class.php | tr -d '[[:space:]]')"
+    fosURL="https://github.com/FOGProject/fos/releases/download"
+    fogclientURL="https://github.com/FOGProject/fog-client/releases/download"
     [[ ! -d ../tmp/ ]] && mkdir -p ../tmp/ >/dev/null 2>&1
     cwd=$(pwd)
     cd ../tmp/
     if [[ $version =~ ^[0-9]\.[0-9]\.[0-9]$ ]]
     then
-        urls=( "https://fogproject.org/binaries${version}.zip" )
+        urls=( "${fosURL}/${version}/init.xz" "${fosURL}/${version}/init_32.xz" "${fosURL}/${version}/bzImage" "${fosURL}/${version}/bzImage32" "${fogclientURL}/${clientVer}/FOGService.msi" "${fogclientURL}/${clientVer}/SmartInstaller.exe" )
         if [[ $armsupport == 1 ]]; then
-            urls+=( "https://fogproject.org/binaries${version}_arm.zip" )
+            urls+=( "${fosURL}/${version}/arm_init.cpio.gz" "${fosURL}/${version}/arm_Image" )
         fi
     else
-        clientVer="$(awk -F\' /"define\('FOG_CLIENT_VERSION'[,](.*)"/'{print $4}' ../packages/web/lib/fog/system.class.php | tr -d '[[:space:]]')"
-        urls=( "https://fogproject.org/inits/init.xz" "https://fogproject.org/inits/init_32.xz" "https://fogproject.org/kernels/bzImage" "https://fogproject.org/kernels/bzImage32" "https://github.com/FOGProject/fog-client/releases/download/${clientVer}/FOGService.msi" "https://github.com/FOGProject/fog-client/releases/download/${clientVer}/SmartInstaller.exe" )
+        urls=( "https://fogproject.org/inits/init.xz" "https://fogproject.org/inits/init_32.xz" "https://fogproject.org/kernels/bzImage" "https://fogproject.org/kernels/bzImage32" "${fogclientURL}/${clientVer}/FOGService.msi" "${fogclientURL}/${clientVer}/SmartInstaller.exe" )
         if [[ $armsupport == 1 ]]; then
             urls+=( "https://fogproject.org/inits/arm_init.cpio.gz" "https://fogproject.org/kernels/arm_Image" )
         fi
@@ -2393,19 +2405,6 @@ downloadfiles() {
         fi
     done
     echo "Done"
-    if [[ $version =~ ^[0-9]\.[0-9]\.[0-9]$ ]]
-    then
-        dots "Extracting the binaries archive"
-        unzip -o binaries${version}.zip >>$workingdir/error_logs/fog_error_${version}.log 2>&1
-        errorStat $?
-        copypath="packages/*/"
-        if [[ $armsupport == 1 ]]; then
-            dots "Extracting the ARM binaries archive"
-            unzip -o binaries${version}_arm.zip >>$workingdir/error_logs/fog_error_${version}.log 2>&1
-            errorStat $?
-            copypath_arm="packages_arm/*/"
-        fi
-    fi
     dots "Copying binaries to destination paths"
     cp -vf ${copypath}bzImage ${webdirdest}/service/ipxe/ >>$workingdir/error_logs/fog_error_${version}.log 2>&1 || errorStat $?
     cp -vf ${copypath}bzImage32 ${webdirdest}/service/ipxe/ >>$workingdir/error_logs/fog_error_${version}.log 2>&1 || errorStat $?
@@ -2435,7 +2434,6 @@ configureDHCP() {
     esac
     case $bldhcp in
         1)
-            [[ -f $dhcpconfig ]] && cp -f $dhcpconfig ${dhcpconfig}.fogbackup
             serverip=$(ip -4 -o addr show $interface | awk -F'([ /])+' '/global/ {print $4}')
             [[ -z $serverip ]] && serverip=$(/sbin/ifconfig $interface | grep -oE 'inet[:]? addr[:]?([0-9]{1,3}\.){3}[0-9]{1,3}' | awk -F'(inet[:]? ?addr[:]?)' '{print $2}')
             [[ -z $submask ]] && submask=$(cidr2mask $(getCidr $interface))
@@ -2449,6 +2447,7 @@ configureDHCP() {
                 echo "Could not find dhcp config file"
                 exit 1
             fi
+            mv -fv "${dhcptouse}" "${dhcptouse}.${timestamp}" >>$workingdir/error_logs/fog_error_${version}.log 2>&1
             [[ -z $bootfilename ]] && bootfilename="undionly.kpxe"
             echo "# DHCP Server Configuration file\n#see /usr/share/doc/dhcp*/dhcpd.conf.sample" > $dhcptouse
             echo "# This file was created by FOG" >> "$dhcptouse"
@@ -2524,6 +2523,7 @@ configureDHCP() {
             echo "        }" >> "$dhcptouse"
             echo "    }" >> "$dhcptouse"
             echo "}" >> "$dhcptouse"
+            diffconfig "${dhcptouse}"
             case $systemctl in
                 yes)
                     systemctl enable $dhcpd >>$workingdir/error_logs/fog_error_${version}.log 2>&1
@@ -2610,4 +2610,14 @@ generatePassword() {
 }
 checkPasswordChars() {
     echo "$i" | tr -d '0-9a-zA-Z!#$%&()*+,-./:;<=>?@[]^_{|}~'
+}
+diffconfig() {
+    local conffile="$1"
+    [[ ! -f "${conffile}.${timestamp}" ]] && return 0
+    diff -q "${conffile}" "${conffile}.${timestamp}" >>$workingdir/error_logs/fog_error_${version}.log 2>&1
+    if [[ $? -eq 0 ]]; then
+        rm -f "${conffile}.${timestamp}" >>$workingdir/error_logs/fog_error_${version}.log 2>&1
+    else
+        backupconfig="${backupconfig} ${conffile}"
+    fi
 }

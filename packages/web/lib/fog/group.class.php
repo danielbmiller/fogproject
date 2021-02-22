@@ -633,6 +633,9 @@ class Group extends FOGController
                     false,
                     ''
                 );
+                if (!is_array($imageIDs)) {
+                    $imageIDs = array($imageIDs);
+                }
                 $batchFields = array(
                     'name',
                     'createdBy',
